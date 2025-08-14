@@ -1,23 +1,18 @@
-import os
-import re
-import numpy as np
 from fastapi import FastAPI
 from pydantic import BaseModel
+from sentence_transformers import SentenceTransformer
+import numpy as np
 from nltk.stem import WordNetLemmatizer
 import nltk
+import re
 
-# Download wordnet only if not present
-try:
-    nltk.data.find("corpora/wordnet")
-except LookupError:
-    nltk.download("wordnet", quiet=True)
-    nltk.download("omw-1.4", quiet=True)
+# Download required NLTK data silently
+nltk.download('wordnet', quiet=True)
+nltk.download('omw-1.4', quiet=True)
 
 lemmatizer = WordNetLemmatizer()
 
-# -----------------------------
-# Data Definitions
-# -----------------------------
+# ---------------- Data ----------------
 actions = ["create", "view", "search", "delete", "update", "modify", "approve"]
 processes = [
     "customer", "salesorder", "shipment", "invoice", "receipt",
@@ -55,25 +50,19 @@ process_synonyms = {
     "view okr": ["view okr", "see okr", "display okr", "show okr"]
 }
 
-# -----------------------------
-# Model & Embeddings
-# -----------------------------
-model = None
-intent_embeddings = None
+# Generate all possible intents
 intents = [f"{action} {process}" for action in actions for process in processes]
+
+# Load the model
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Precompute intent embeddings
+intent_embeddings = model.encode(intents, convert_to_tensor=False)
+
+# Similarity acceptance threshold
 EMBEDDING_ACCEPT_THRESHOLD = 0.9
 
-def load_model():
-    """Load the model and embeddings when first needed."""
-    global model, intent_embeddings
-    if model is None:
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer('all-MiniLM-L6-v2')
-        intent_embeddings = model.encode(intents, convert_to_tensor=False)
-
-# -----------------------------
-# Helper Functions
-# -----------------------------
+# ---------------- Utility Functions ----------------
 def normalize_word(word):
     return lemmatizer.lemmatize(word.lower(), pos='v')
 
@@ -101,9 +90,11 @@ def normalize_process(sentence):
     return match_with_synonyms(sentence, process_synonyms)
 
 def get_intent_with_score(user_sentence):
-    load_model()
     user_emb = model.encode([user_sentence.lower().strip()], convert_to_tensor=False)[0]
-    sims = [float(np.dot(user_emb, emb) / (np.linalg.norm(user_emb) * np.linalg.norm(emb))) for emb in intent_embeddings]
+    sims = [
+        float(np.dot(user_emb, emb) / (np.linalg.norm(user_emb) * np.linalg.norm(emb)))
+        for emb in intent_embeddings
+    ]
     top_idx = int(np.argmax(sims))
     return intents[top_idx], sims[top_idx]
 
@@ -113,17 +104,14 @@ def truncate(text, max_len=50):
     text = str(text)
     return text if len(text) <= max_len else text[:max_len-3] + "..."
 
-# -----------------------------
-# FastAPI Setup
-# -----------------------------
-app = FastAPI(title="Intent Recognition API", description="Detects action & process from a given sentence", version="1.0")
+# ---------------- FastAPI Setup ----------------
+app = FastAPI(title="Intent Recognition API")
 
 class Query(BaseModel):
     sentence: str
 
 @app.get("/")
-def home():
-    """Root endpoint for testing."""
+def root():
     return {
         "message": "Intent Recognition API is running",
         "usage": "POST a sentence to /predict/ to get action & process",
@@ -136,34 +124,57 @@ def predict(query: Query):
     action_found = normalize_action(sentence)
     process_found = normalize_process(sentence)
 
+    # BOTH FOUND
     if action_found and process_found:
-        return {"status": "success", "action": truncate(action_found), "process": truncate(process_found), "error": "no error detected"}
+        return {
+            "status": "success",
+            "action": truncate(action_found),
+            "process": truncate(process_found),
+            "error": "no error detected"
+        }
 
+    # ACTION FOUND, PROCESS MISSING
     if action_found and not process_found:
         predicted_intent, score = get_intent_with_score(sentence)
         _, predicted_process = predicted_intent.split(' ', 1)
         if score >= EMBEDDING_ACCEPT_THRESHOLD:
-            return {"status": "success", "action": truncate(action_found), "process": truncate(predicted_process), "error": "no error detected"}
+            return {
+                "status": "success",
+                "action": truncate(action_found),
+                "process": truncate(predicted_process),
+                "error": "no error detected"
+            }
         else:
-            return {"status": "failure", "action": truncate(action_found), "process": "not found",
-                    "error": f"I understand you want to {truncate(action_found,35)} something, but couldn’t figure out what."}
+            return {
+                "status": "failure",
+                "action": truncate(action_found),
+                "process": "not found",
+                "error": f"I understand you want to {truncate(action_found, 35)} something, but couldn’t figure out what."
+            }
 
+    # PROCESS FOUND, ACTION MISSING
     if process_found and not action_found:
         predicted_intent, score = get_intent_with_score(sentence)
         predicted_action, _ = predicted_intent.split(' ', 1)
         if score >= EMBEDDING_ACCEPT_THRESHOLD:
-            return {"status": "success", "action": truncate(predicted_action), "process": truncate(process_found), "error": "no error detected"}
+            return {
+                "status": "success",
+                "action": truncate(predicted_action),
+                "process": truncate(process_found),
+                "error": "no error detected"
+            }
         else:
-            return {"status": "failure", "action": "not found", "process": truncate(process_found),
-                    "error": f"Recognized process '{truncate(process_found,40)}', but not action."}
+            return {
+                "status": "failure",
+                "action": "not found",
+                "process": truncate(process_found),
+                "error": f"Recognized process '{truncate(process_found, 40)}', but not action."
+            }
 
-    return {"status": "failure", "action": "not found", "process": "not found",
-            "error": "Could not determine intent. Please rephrase."}
-
-# -----------------------------
-# Entry Point for Cloud Run
-# -----------------------------
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 10000))  # Render/Heroku uses PORT env var
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # NEITHER FOUND
+    return {
+        "status": "failure",
+        "action": "not found",
+        "process": "not found",
+        "error": "Could not determine intent. Please rephrase."
+    }
