@@ -1,0 +1,5 @@
+fastapi==0.102
+uvicorn==0.23
+sentence-transformers==2.2.2
+nltk==3.8.1
+numpy==1.25.0
