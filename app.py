@@ -15,6 +15,9 @@ except LookupError:
 
 lemmatizer = WordNetLemmatizer()
 
+# -----------------------------
+# Data Definitions
+# -----------------------------
 actions = ["create", "view", "search", "delete", "update", "modify", "approve"]
 processes = [
     "customer", "salesorder", "shipment", "invoice", "receipt",
@@ -25,7 +28,7 @@ processes = [
 
 action_synonyms = {
     "create": ["create", "add", "make", "generate", "build"],
-    "view": ["view", "show", "display", "see", "list",  "open"],
+    "view": ["view", "show", "display", "see", "list", "open"],
     "search": ["search", "find", "lookup", "locate", "filter", "retrieve", "get", "fetch"],
     "delete": ["delete", "remove", "discard", "erase", "drop", "deleted", "eliminate"],
     "update": ["update", "refresh", "revise", "amend", "change"],
@@ -52,7 +55,9 @@ process_synonyms = {
     "view okr": ["view okr", "see okr", "display okr", "show okr"]
 }
 
-# Lazy load model variables
+# -----------------------------
+# Model & Embeddings
+# -----------------------------
 model = None
 intent_embeddings = None
 intents = [f"{action} {process}" for action in actions for process in processes]
@@ -66,6 +71,9 @@ def load_model():
         model = SentenceTransformer('all-MiniLM-L6-v2')
         intent_embeddings = model.encode(intents, convert_to_tensor=False)
 
+# -----------------------------
+# Helper Functions
+# -----------------------------
 def normalize_word(word):
     return lemmatizer.lemmatize(word.lower(), pos='v')
 
@@ -105,11 +113,22 @@ def truncate(text, max_len=50):
     text = str(text)
     return text if len(text) <= max_len else text[:max_len-3] + "..."
 
-# ---------------- FastAPI Setup ----------------
-app = FastAPI(title="Intent Recognition API")
+# -----------------------------
+# FastAPI Setup
+# -----------------------------
+app = FastAPI(title="Intent Recognition API", description="Detects action & process from a given sentence", version="1.0")
 
 class Query(BaseModel):
     sentence: str
+
+@app.get("/")
+def home():
+    """Root endpoint for testing."""
+    return {
+        "message": "Intent Recognition API is running",
+        "usage": "POST a sentence to /predict/ to get action & process",
+        "docs": "/docs"
+    }
 
 @app.post("/predict/")
 def predict(query: Query):
@@ -141,8 +160,10 @@ def predict(query: Query):
     return {"status": "failure", "action": "not found", "process": "not found",
             "error": "Could not determine intent. Please rephrase."}
 
-# Entry point for Render
+# -----------------------------
+# Entry Point for Cloud Run
+# -----------------------------
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 10000))  # Render/Heroku uses PORT env var
     uvicorn.run(app, host="0.0.0.0", port=port)
